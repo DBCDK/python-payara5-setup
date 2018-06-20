@@ -1,0 +1,59 @@
+#!/usr/bin/env python3
+
+import os
+import re
+import sys
+
+
+class Levels(object):
+
+    _LEVEL_MAP = {
+        'E': 'ERROR',
+        'W': 'WARNING',
+        'I': 'INFO',
+        'D': 'DEBUG',
+        'T': 'ALL'
+    }
+
+    def __init__(self):
+        self._levels = {}
+        for env in os.environ.keys():
+            if not env.startswith("LOG__"):
+                continue
+            key = env[5:].replace('_', '.') + ".level"
+            value = os.environ[env].upper()
+            if value[0] in self._LEVEL_MAP:
+                value = self._LEVEL_MAP[value[0]]
+            self._levels[key] = "%s=%s\n" % (key, value)
+
+    def re_level(self, line: str) -> str:
+        if '.level=' in line:
+            key = line[0:line.find('.level=') + 6]
+            if key in self._levels:
+                line = self._levels[key]
+                del self._levels[key]
+        return line
+
+    def remaining(self):
+        keys = list(self._levels.keys())
+        if not keys:
+            return []
+        keys.sort()
+        return ["\n"] + [self._levels[key] for key in keys]
+
+
+if __name__ == '__main__':
+    levels = Levels()
+    filename = "logging.properties"
+    if len(sys.argv) > 1:
+        filename = sys.argv[1]
+    lines = []
+    with open(filename, 'r') as io:
+        lines = io.readlines()
+    lines = [levels.re_level(line) for line in lines]
+    lines.extend(levels.remaining())
+    if len(sys.argv) > 2:
+        filename = sys.argv[2]
+    with open(filename, 'w') as io:
+        for line in lines:
+            print(line, file=io, end="")

@@ -1,0 +1,647 @@
+#!/usr/bin/env python3
+
+import os
+import stat
+from shutil import copy2 as copy
+import sys
+
+from expanding.tokenizer import TokenType as T
+from expanding.tokenizer import *
+
+from xmltools.payara_domain_xml import DomainXml
+
+
+class PayaraConfig(object):
+    """Configuration file reader and mapper
+
+Handles  input gresourced and maps then into a 'config.xml' abstraction
+
+    """
+
+    def _shorthand(**kvargs):
+        """
+        Make  a function that given an token with an abbreviated key returns the value from key kvargs
+        :param kvargs: key to value (keys are _/- equivalent)
+        :return: function returning value fiven a token
+        """
+        keys = sorted([k.lower() for k in kvargs.keys()])
+        last = keys.pop()
+        if keys:
+            keys = "one of (%s or %s)" % (", ".join(keys), last)
+        else:
+            keys = last
+        values = {}
+        for k, v in sorted(kvargs.items(), key=lambda i: -len(i[0])):
+            k = k.replace("_", "-").lower()
+            values[k] = [v]
+            for i in range(1, len(k)):
+                short = k[0:i]
+                if short not in values:
+                    values[short] = []
+                values[short].append(v)
+        values = {k: v1 for k, v in values.items() if len(set({str(v2) for v2 in v})) == 1 for v1 in v}
+
+        def _lookup(token, type="word"):
+            key = token.content().replace("_", "-").lower()
+            if key not in values:
+                raise SyntaxError("Unknown %s: `%s' at: %s expected %s" % (type, token.content(), token.at(), keys))
+            return values[key]
+
+        return _lookup
+
+    _JDBC_RULES_DEFAULT = {
+        'attribs': {
+            "res-type": "javax.sql.DataSource",
+            "datasource-classname": "org.postgresql.ds.PGSimpleDataSource",
+            "ping": "true",
+            "fail-all-connections": "true",
+            "is-connection-validation-required": "true",
+            "connection-validation-method": "custom-validation",
+            "validation-classname": "org.glassfish.api.jdbc.validation.PostgresConnectionValidation",
+            "validate-atmost-once-period-in-seconds": "60"
+        },
+        'props': {
+            "SslFactory": "org.postgresql.ssl.NonValidatingFactory",
+            "PortNumber": "5432"
+        },
+        'credentials': ['User', 'Password', 'ServerName', 'PortNumber', 'DatabaseName']
+    }
+    _JDBC_RULES = _shorthand(postgresql=_JDBC_RULES_DEFAULT)
+    _JDBC_KNOWN_ATTRIBS = {
+        "allow-non-component-callers", "associate-with-thread", "connection-creation-retry-attempts",
+        "connection-creation-retry-interval-in-seconds", "connection-leak-reclaim",
+        "connection-leak-timeout-in-seconds", "connection-validation-method",
+        "datasource-classname", "description", "driver-classname", "fail-all-connections",
+        "idle-timeout-in-seconds", "init-sql", "is-connection-validation-required",
+        "is-isolation-level-guaranteed", "lazy-connection-association", "lazy-connection-enlistment",
+        "match-connections", "max-connection-usage-count", "max-pool-size", "max-wait-time-in-millis",
+        "name", "non-transactional-connections", "ping", "pool-resize-quantity", "pooling", "res-type",
+        "sql-trace-listeners", "statement-cache-size", "statement-leak-reclaim",
+        "statement-leak-timeout-in-seconds", "statement-timeout-in-seconds", "steady-pool-size",
+        "target", "transaction-isolation-level", "validate-atmost-once-period-in-seconds",
+        "validation-classname", "validation-table-name", "wrap-jdbc-objects"
+
+    }
+    _JMS_FACTORY_KNOWN = {
+        "associate-with-thread", "connection-creation-retry-attempts",
+        "connection-creation-retry-interval-in-seconds", "connection-definition-name",
+        "connection-leak-reclaim", "connection-leak-timeout-in-seconds", "deployment-order",
+        "fail-all-connections", "idle-timeout-in-seconds", "is-connection-validation-required",
+        "lazy-connection-association", "lazy-connection-enlistment", "match-connections",
+        "max-connection-usage-count", "max-pool-size", "max-wait-time-in-millis", "object-type",
+        "ping", "pooling", "pool-resize-quantity", "resource-adapter-name",
+        "steady-pool-size", "transaction-support", "validate-atmost-once-period-in-seconds"}
+    _JMS_DESTINATION_KNOWN = {
+        "object-type", "deployment-order", "class-name",
+        "res-adapter", "enabled", "res-type", "jndi-name",
+        "description"
+    }
+    _APP_KNOWN = {
+        "context-root", "name", "location"
+    }
+    _CRES_TYPES = _shorthand(properties="java.util.Properties",
+                             props="java.util.Properties",
+                             property="java.util.Properties",
+                             float="java.lang.Float",
+                             character="java.lang.Character",
+                             long="java.lang.Long",
+                             double="java.lang.Double",
+                             short="java.lang.Short",
+                             boolean="java.lang.Boolean",
+                             string="java.lang.String",
+                             byte="java.lang.Byte",
+                             integer="java.lang.Integer")
+
+    def __init__(self, instance_dir: str, domain: str = "domain1"):
+        """
+        Setup the domain.xml from the instance_dir for modification
+
+        :param instance_dir:
+        :param domain: mane og payara domain
+        """
+        self._instance_dir = os.path.join(instance_dir, 'glassfish', 'domains', domain)
+        domain_xml = os.path.join(self._instance_dir, 'config', 'domain.xml')
+        self._domain_xml = DomainXml(domain_xml)
+
+    def _process_txt(self, src: str):
+        """
+        Copy content to stdout
+
+        :param src: full path of source file
+        :return: None
+        """
+        with open(src, "r") as io:
+            print(io.read(), end='')
+
+    def _process_app(self, src: str):
+        """
+
+        :param src: full path of source file
+        :return: None
+        """
+        tokenizer = Tokenizer.ini_from_file(src)
+
+        cfg_props = {}
+
+        while tokenizer.has_more():
+            line = []
+            if tokenizer.tokens_are(T.NEWLINE):
+                pass
+            elif tokenizer.tokens_are(T.WORD, T.EQ, T.TEXT, T.EOL, output=line):
+                if line[0].content() in cfg_props:
+                    raise Exception("At %s, %s is redefined" % (line[0].at(), line[0].content()))
+                cfg_props[line[0].content()] = line[2].content()
+            else:
+                unexpected = tokenizer.peek_token()
+                raise SyntaxError("Unexpected input: `%s' at: %s" % (unexpected.content(), unexpected.at()))
+
+        for required in {"location"}:
+            if required not in cfg_props:
+                raise Exception("Required parameter %s is not defined in %s" % (required, src))
+        props = {"context-root": "/",
+                 "name": "app"}
+        props.update(cfg_props)
+        for key in props:
+            if key not in self._APP_KNOWN:
+                raise Exception("Unknown parameter %s is not defined in %s" % (key, src))
+        app_file = os.path.join(os.path.dirname(src), props['location'])
+        if not os.path.isfile(app_file):
+            raise Exception("missing file: " + app_file)
+        self._domain_xml.app(props['name'], app_file, props['context-root'])
+
+    def _process_lib(self, src: str):
+        """
+        Read sections and copy jars into relevant instance_dir paths
+
+        :param src: full path of source file
+        :return: None
+        """
+        base = os.path.dirname(src)
+        lib = os.path.join(self._instance_dir, 'lib')
+        os.makedirs(lib, exist_ok=True)
+        tokenizer = Tokenizer.ini_from_file(src)
+        while tokenizer.has_more():
+            line = []
+            if tokenizer.tokens_are(T.NEWLINE):
+                pass
+            elif tokenizer.tokens_are(T.SECTION, T.EOL, output=line):
+                if line[0].content() not in {"app", "common", "ext"}:
+                    raise Exception("at %s unknown section. known are: app, common & ext" % line[0].at())
+                if line[0].content() == "app":
+                    lib = os.path.join(self._instance_dir, 'lib', 'applibs')
+                    os.makedirs(lib, exist_ok=True)
+                elif line[0].content() == "ext":
+                    lib = os.path.join(self._instance_dir, 'lib', 'ext')
+                    os.makedirs(lib, exist_ok=True)
+                else:
+                    lib = os.path.join(self._instance_dir, 'lib')
+            elif tokenizer.tokens_are(T.TEXT, T.EOL, output=line):
+                copy(os.path.join(base, line[0].content()), lib)
+            else:
+                unexpected = tokenizer.peek_token()
+                raise SyntaxError("Unexpected input: `%s' at: %s" % (unexpected.content(), unexpected.at()))
+
+    def _process_cres(self, src: str):
+        """
+        Create custom-resources each section declares a type, and thw following key/value pairs are jndi-name
+        and value. 'properties' are special, in the case that the 1st argument is a simple text with the
+        jndi-name, and the following key/value pairs are properties
+
+        :param src: full path of source file
+        :return: None
+        """
+        tokenizer = Tokenizer.ini_from_file(src)
+        while tokenizer.has_more():
+            line = []
+            if tokenizer.tokens_are(T.NEWLINE):
+                pass
+            elif tokenizer.tokens_are(T.SECTION, T.EOL, output=line):
+                res_type = PayaraConfig._CRES_TYPES(line[0], type="section")
+                if res_type == "java.util.Properties":
+                    name = None
+                    while tokenizer.has_more():
+                        line = []
+                        if tokenizer.tokens_are(T.NEWLINE):
+                            pass
+                        elif tokenizer.tokens_are(T.TEXT, T.EOL, output=line):
+                            name = line[0].content()
+                            break
+                        else:
+                            unexpected = tokenizer.peek_token()
+                            raise SyntaxError("Unexpected input: `%s' at: %s" % (unexpected.content(), unexpected.at()))
+                    props = self._read_props(tokenizer)
+                    self._domain_xml.custom_resource_props(name, props)
+                else:
+                    props = self._read_props(tokenizer, key_is=T.TEXT)
+                    for name in props.keys():
+                        self._domain_xml.custom_resource_primitive(res_type, name, props[name])
+            else:
+                unexpected = tokenizer.peek_token()
+                raise SyntaxError("Unexpected input: `%s' at: %s" % (unexpected.content(), unexpected.at()))
+
+    def _process_jdbc(self, src: str) -> None:
+        """
+        Read a jdbc resource and enable it
+
+        :param src: full path of source file
+        :return: None
+        """
+        template = PayaraConfig._JDBC_RULES_DEFAULT
+        tokenizer = Tokenizer.ini_from_file(src)
+        self._eat_newlines(tokenizer)
+        line = []
+        if tokenizer.tokens_are(T.WORD, T.EOL, output=line):
+            template = PayaraConfig._JDBC_RULES(line[0], type="template")
+        while tokenizer.has_more():
+            self._eat_newlines(tokenizer)
+            line = []
+            if tokenizer.tokens_are(T.SECTION, T.EOL, output=line):
+                jndi_name = line[0].content()
+                props = template['props']
+                attribs = template['attribs']
+                credentials = template['credentials']
+                self._eat_newlines(tokenizer)
+                line = []
+                if tokenizer.tokens_are(T.TEXT, T.EOL, output=line):
+                    props.update(PayaraConfig._jdbc_credentials(credentials, line[0].content()))
+                props.update(self._read_props(tokenizer))
+                attribs.update({k: v for (k, v) in props.items() if k in self._JDBC_KNOWN_ATTRIBS})
+                props = {k: v for (k, v) in props.items() if k not in self._JDBC_KNOWN_ATTRIBS}
+                self._domain_xml.jdbc_resource(jndi_name, attribs, props)
+            else:
+                unexpected = tokenizer.peek_token()
+                raise SyntaxError("Unexpected input: `%s' at: %s" % (unexpected.content(), unexpected.at()))
+
+    def _process_set(self, src: str):
+        """
+        process a .set type file see SYNTAX for description
+
+        :param src: full path of source file
+        :return: None
+        """
+        tokenizer = Tokenizer.ini_from_file(src)
+        actions = PayaraConfig._shorthand(properties=self._domain_xml.props_at,
+                                          property=self._domain_xml.props_at,
+                                          props=self._domain_xml.props_at,
+                                          attributes=self._domain_xml.attrs_at,
+                                          ensure=self._domain_xml.ensure_at)
+        while tokenizer.has_more():
+            line = []
+            if tokenizer.tokens_are(T.NEWLINE):
+                pass
+            elif tokenizer.tokens_are(T.SECTION, T.EOL, output=line):
+                action = actions(line[0], type="section")
+                while tokenizer.has_more():
+                    self._eat_newlines(tokenizer)
+                    line = []
+                    if tokenizer.peek_token().is_a(T.SECTION):
+                        break
+                    if tokenizer.tokens_are(T.TEXT, T.EOL, output=line):
+                        xpath = line[0].content()
+                        props = self._read_props(tokenizer, key_is=T.TEXT)
+                        action(xpath, props)
+            else:
+                unexpected = tokenizer.peek_token()
+                raise SyntaxError("Unexpected input: `%s' at: %s" % (unexpected.content(), unexpected.at()))
+
+    def _process_jms(self, src: str) -> None:
+        """
+        Create jms resources. see SYNTAX for description
+
+        :param src: full path of source file
+        :return: None
+        """
+        tokenizer = Tokenizer.ini_from_file(src)
+        self._eat_newlines(tokenizer)
+        line = []
+        while tokenizer.has_more():
+            self._eat_newlines(tokenizer)
+            line = []
+            if tokenizer.tokens_are(T.SECTION, T.EOL, output=line):
+                section = line[0].content()
+                at = line[0].at()
+                if section == 'REMOTE':
+                    props = self._read_props(tokenizer)
+                    if not 'address' in props:
+                        raise Exception("Missing 'address' in jms at %s" % at)
+                    self._domain_xml.jms_remote(props['address'])
+                elif section.endswith('Factory'):
+                    props = self._read_props(tokenizer, {
+                        "connection-definition-name": "javax.jms." + section,
+                        "resource-adapter-name": "jmsra",
+                        "transaction-support": "XATransaction"
+                    })
+                    props = self._read_props(tokenizer, props)
+                    attribs = {k: v for (k, v) in props.items() if k in self._JMS_FACTORY_KNOWN}
+                    props = {k: v for (k, v) in props.items() if k not in self._JMS_FACTORY_KNOWN}
+                    if not 'name' in props:
+                        raise Exception("Missing 'name' in jms at %s" % at)
+                    name = props['name']
+                    del props['name']
+                    self._domain_xml.jms_factory_resource(name, attribs, props)
+                else:
+                    props = self._read_props(tokenizer, {
+                        "res-type": "javax.jms." + section,
+                        "res-adapter": "jmsra"
+                    })
+                    props = self._read_props(tokenizer, props)
+                    attribs = {k: v for (k, v) in props.items() if k in self._JMS_DESTINATION_KNOWN}
+                    props = {k: v for (k, v) in props.items() if k not in self._JMS_DESTINATION_KNOWN}
+                    if not 'name' in props:
+                        raise Exception("Missing 'name' in jms at %s" % at)
+                    name = props['name']
+                    del props['name']
+                    if 'Name' not in props:
+                        props['Name'] = name.replace("/", "_")
+                    self._domain_xml.jms_destination_resource(name, attribs, props)
+            else:
+                unexpected = tokenizer.peek_token()
+                raise SyntaxError("Unexpected input: `%s' at: %s" % (unexpected.content(), unexpected.at()))
+
+    def _process_xpath(self, src: str) -> None:
+        """
+        Simple xpath expressions
+
+        :param src: full path of source file
+        :return: None
+        """
+        tokenizer = Tokenizer.ini_from_file(src)
+        self._eat_newlines(tokenizer)
+        line = []
+        while tokenizer.has_more():
+            self._eat_newlines(tokenizer)
+            line = []
+            if tokenizer.tokens_are(T.SECTION, T.EOL, output=line):
+                section = line[0].content()
+                at = line[0].at()
+                if section.lower() == 'remove':
+                    while tokenizer.has_more():
+                        line = []
+                        self._eat_newlines(tokenizer)
+                        if tokenizer.tokens_are(T.TEXT, T.EOL, output=line):
+                            self._domain_xml.xml.remove(line[0].content())
+                        else:
+                            break
+                elif section.lower() == 'append':
+                    while tokenizer.has_more():
+                        line = []
+                        self._eat_newlines(tokenizer)
+                        if tokenizer.tokens_are(T.TEXT, T.EQ, T.TEXT, T.EOL, output=line):
+                            self._domain_xml.xml.append(line[0].content(), line[2].content())
+                        else:
+                            break
+                elif section.lower() == 'remove-attr':
+                    while tokenizer.has_more():
+                        line = []
+                        self._eat_newlines(tokenizer)
+                        if tokenizer.tokens_are(T.TEXT, T.EQ, T.WORD, T.EOL, output=line):
+                            self._domain_xml.xml.remove_attr(line[0].content(), line[2].content())
+                        else:
+                            break
+                elif section.lower() == 'set-attr':
+                    while tokenizer.has_more():
+                        line = []
+                        self._eat_newlines(tokenizer)
+                        if tokenizer.tokens_are(T.TEXT, T.EQ, T.WORD, T.TEXT, T.EOL, output=line):
+                            self._domain_xml.xml.set_attr(line[0].content(), line[2].content(), line[3].content())
+                        else:
+                            break
+                else:
+                    raise Exception("Unknown section at %s" % at)
+            else:
+                unexpected = tokenizer.peek_token()
+                raise SyntaxError("Unexpected input: `%s' at: %s" % (unexpected.content(), unexpected.at()))
+
+    def _process_jvm(self, src: str):
+        """
+        Set/Remove/Reset jvm options
+
+        :param src: full path of source file
+        :return: None
+        """
+        tokenizer = Tokenizer.ini_from_file(src)
+        props = dict(add=set(), remove=set())
+        wipe = False
+        current = props['add']
+        while tokenizer.has_more():
+            line = []
+            if tokenizer.tokens_are(T.NEWLINE):
+                pass
+            elif tokenizer.tokens_are(T.SECTION, T.EOL, output=line):
+                section = line[0].content().lower()
+                if section == 'clear':
+                    wipe = True
+                elif section in props:
+                    current = props[section]
+                else:
+                    raise Exception("Unknown section %a at: %s", section, line[0].at())
+            elif tokenizer.tokens_are(T.TEXT, T.EOL, output=line):
+                current.add(line[0].content())
+            else:
+                unexpected = tokenizer.peek_token()
+                raise SyntaxError("Unexpected input: `%s' at: %s" % (unexpected.content(), unexpected.at()))
+        self._domain_xml.jvm_options(wipe, props['add'], props['remove'])
+
+    def _process_sh(self, src: str):
+        """
+        Run the script
+
+        :param src: full path of source file
+        :return: None
+        """
+        st = os.stat(src)
+        os.chmod(src, st.st_mode | stat.S_IEXEC)
+        os.system(src)
+
+    def process(self, src: str) -> None:
+        """
+        Find a method matchnig the suffix of the filename
+
+        :param src: full path of source file
+        :return: None
+        """
+        method_name = "_process_" + src[src.rfind(".") + 1:]
+        method = self.__class__.__dict__.get(method_name)
+        if method is None:
+            raise Exception("Unknown file type: " + src)
+        name = os.path.split(src)[-1]
+        print("Setting up from:", name)
+        method.__call__(self, src)
+
+    def done(self):
+        """
+        Save the modified domain.xml file
+
+        :return: None
+        """
+        self._domain_xml.save()
+
+    @staticmethod
+    def _read_props(tokenizer, props=None, key_is=T.WORD):
+        if props is None:
+            props = {}
+        while tokenizer.has_more():
+            line = []
+            if tokenizer.tokens_are(T.NEWLINE):
+                pass
+            elif tokenizer.tokens_are(key_is, T.EQ, T.TEXT, T.EOL, output=line):
+                props[line[0].content()] = line[2].content()
+            else:
+                break
+        return props
+
+    @staticmethod
+    def _eat_newlines(tokenizer):
+        while tokenizer.has_more() and tokenizer.tokens_are(T.NEWLINE):
+            pass
+
+    @staticmethod
+    def _jdbc_credentials(names, s, props=None):
+        if props is None:
+            props = {}
+        m = re.match('(?:([^:@]*)(?::([^@]*))?@)?([^:/]+)(?::(\\d+))?(?:/(.*))', s)
+        if m is None:
+            raise Exception("Invalid credentials")
+        for i in range(0, len(names)):
+            if m.group(i + 1) is not None:
+                props[names[i]] = m.group(i + 1)
+        return props
+
+    SYNTAX = """
+    .app:
+    key-value+:
+      * location= - (absolute or relative to .app file) path of war/ear (required)
+      * name= - application name
+      * context-root= - deploy path
+    
+    .lib
+    (section|string)+
+      * section - (one of: applibs, common(default) or ext) where to place jars (see asadmin)
+        * string(s) - (absolute or relative to .lib file) path of war/ear
+    
+    .cres:
+    (section text? key-value*)*
+      * section - custom resource type (short name, ie. string, boolean, properties...)
+        * for `properties`:
+          * text - resource name
+          * key-value - property values
+        * for `primitives/string`
+          * key-value - property name to value
+     
+    .set:
+    (section (text key-value*)*)*
+      * section is one of ensure, properties, attributes
+        * text - xpath expression to node
+        * key-value - property values (for ensure: . = tag name)
+
+    .jdbc:
+    text? (section text? key-value*)*
+      * text - template defaulte to 'postgresql' (sets sane defaults)
+        * section - jdbc name (ie. jdbc/my-database)
+        * text - connect string (user:pass@host[:port]/base)
+        * key-value - database connection properties
+          - the following is set as connection parameters      
+            allow-non-component-callers, associate-with-thread, connection-creation-retry-attempts,
+            connection-creation-retry-interval-in-seconds, connection-leak-reclaim,
+            connection-leak-timeout-in-seconds, connection-validation-method,
+            datasource-classname, description, driver-classname, fail-all-connections,
+            idle-timeout-in-seconds, init-sql, is-connection-validation-required,
+            is-isolation-level-guaranteed, lazy-connection-association, lazy-connection-enlistment,
+            match-connections, max-connection-usage-count, max-pool-size, max-wait-time-in-millis,
+            name, non-transactional-connections, ping, pool-resize-quantity, pooling, res-type,
+            sql-trace-listeners, statement-cache-size, statement-leak-reclaim,
+            statement-leak-timeout-in-seconds, statement-timeout-in-seconds, steady-pool-size,
+            target, transaction-isolation-level, validate-atmost-once-period-in-seconds,
+            validation-classname, validation-table-name, wrap-jdbc-objects
+          - everything else is set as properties ie. User, Password, ServerName, ApplicationName
+
+    .jms:
+    (section key-value*)*
+      * section is one of: REMOTE/Topic/Queue/*Factory
+      * REMOTE
+        * address= - host[:port] of remote jms server
+      * *Factory
+        * name - the jndi name
+        * key-value - properties
+          - the following properties are known
+            associate-with-thread, connection-creation-retry-attempts,
+            connection-creation-retry-interval-in-seconds, connection-definition-name,
+            connection-leak-reclaim, connection-leak-timeout-in-seconds, deployment-order,
+            fail-all-connections, idle-timeout-in-seconds, is-connection-validation-required,
+            lazy-connection-association, lazy-connection-enlistment, match-connections,
+            max-connection-usage-count, max-pool-size, max-wait-time-in-millis, object-type,
+            ping, pooling, pool-resize-quantity, resource-adapter-name,
+            steady-pool-size, transaction-support, validate-atmost-once-period-in-seconds
+      * *Topic/Queue
+        * name - the jndi name
+        * key-value - properties
+          - the following properties are known, object-type, deployment-order, class-name,
+            res-adapter, enabled, res-type, description, AddressList
+
+    .xpath:
+    (section rules)*
+    * section is one of remove, remove-attr, append, or set-attr
+    * remove (rules = text*)
+      * text - xpath expression to element that should be removed
+    * remove-attr (rules = (text = word)*)
+      * text - xpath expression to element that should have attributes removed
+      * word - attribute name to remove
+    * append (rules = (text = text)*)
+      * text - xpath expression to element that should have content appended
+      * text - literal xml to be inserted
+    * set-attr (rules = (text = word text)*)
+      * text - xpath expression to element that should have attributes set
+      * word - attribute name to set
+      * text - attribute value
+
+    .jvm
+    (section|text)*
+    * section is one of clear, remove or add(default)
+    * clear wipes alle set jvm options
+    * remove
+      * text - shell pattern matching jvm options to remove (ie. -D*.telnet.*)
+    * add
+      * text - literal java-vm flags 
+    
+    .txt
+    * copy content verbatim to stdout
+    
+    .sh
+    * make executable and execute
+    """
+
+    @staticmethod
+    def validate_name(name: str) -> bool:
+        if re.match("^.*\\.(war|ear|jar)$", name) is not None:
+            return
+        if re.match("^\\d+(?:[-_]\\w+)+\\.\\w+$", name) is None:
+            print("Invalid file name:", name, file=sys.stderr)
+            return False
+        return True
+
+    @staticmethod
+    def expand_location(dir_or_file: str) -> str:
+        if os.path.isdir(dir_or_file):
+            entries = [entry for entry in os.listdir(dir_or_file) if PayaraConfig.validate_name(entry)]
+            entries.sort()
+            return [os.path.abspath(os.path.join(dir_or_file, entry)) for entry in entries]
+        elif os.path.isfile(dir_or_file):
+            return [os.path.abspath(dir_or_file)]
+        else:
+            raise IOError("Unknown location: " + dir_or_file)
+
+
+if __name__ == "__main__":
+    if len(sys.argv) == 1:
+        print("Usage: command payara-5-dir [ config-file-or-dir* ]")
+        print("")
+        print(PayaraConfig.SYNTAX)
+        sys.exit(1)
+    elif len(sys.argv) == 2:
+        sys.argv = (sys.argv[0:2], os.getcwd())
+
+    cfg = PayaraConfig(sys.argv[1])
+    for location in sys.argv[2:]:
+        for sub_location in PayaraConfig.expand_location(location):
+            cfg.process(sub_location)
+    cfg.done()

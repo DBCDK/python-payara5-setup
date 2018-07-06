@@ -2,9 +2,8 @@
 
 import os
 from io import BytesIO
-from operator import le
 from xml.etree import ElementTree as ET
-from xml.etree.ElementTree import Element, SubElement, Comment
+from xml.etree.ElementTree import SubElement
 import sys
 
 

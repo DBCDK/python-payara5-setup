@@ -39,7 +39,7 @@ class DomainXml(object):
             content = self._xml.to_xml()
             io.write(content)
 
-    def _ensure(self, xpath: str, tag: str, attrs: dict = None):
+    def _ensure(self, xpath: str, tag: str, attrs: dict = None) -> Element:
         if attrs is None:
             attrs = dict()
         root = self._xml.root(xpath)
@@ -164,6 +164,11 @@ class DomainXml(object):
         tag = attrs['.']
         del attrs['.']
         self._ensure(xpath, tag, attrs)
+
+    def system_property(self, key: str, value: str,) -> None:
+        self._ensure('servers/server[@name="server"]', 'system-property', {"name": key}) \
+            .attr("value", value)
+
 
     def jdbc_resource(self, name: str, attribs: dict, props: dict) -> None:
         """

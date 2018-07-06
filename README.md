@@ -70,6 +70,14 @@ scheme-mapping = "X-Forwarded-Proto"
 ```
 Sets the `<property name="serverName" value="..."/>` in the `http` element
 
+#### .sys
+
+Sets system properties
+```
+my.system.property = my-valye
+
+```
+
 #### .jdbc
 
 ```

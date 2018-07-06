@@ -282,6 +282,24 @@ Handles  input gresourced and maps then into a 'config.xml' abstraction
                 unexpected = tokenizer.peek_token()
                 raise SyntaxError("Unexpected input: `%s' at: %s" % (unexpected.content(), unexpected.at()))
 
+    def _process_sys(self, src: str):
+        """
+        process a .sys type file see SYNTAX for description
+
+        :param src: full path of source file
+        :return: None
+        """
+        tokenizer = Tokenizer.ini_from_file(src)
+        while tokenizer.has_more():
+            line = []
+            if tokenizer.tokens_are(T.NEWLINE):
+                pass
+            elif tokenizer.tokens_are(T.WORD, T.EQ, T.TEXT, T.EOL, output=line):
+                self._domain_xml.system_property(line[0].content(), line[2].content())
+            else:
+                unexpected = tokenizer.peek_token()
+                raise SyntaxError("Unexpected input: `%s' at: %s" % (unexpected.content(), unexpected.at()))
+
     def _process_set(self, src: str):
         """
         process a .set type file see SYNTAX for description
@@ -538,6 +556,9 @@ Handles  input gresourced and maps then into a 'config.xml' abstraction
           * key-value - property values
         * for `primitives/string`
           * key-value - property name to value
+    .sys:
+    key-value*:
+      * system-property
      
     .set:
     (section (text key-value*)*)*

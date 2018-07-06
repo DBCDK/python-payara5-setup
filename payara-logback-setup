@@ -38,7 +38,6 @@ class Levels(object):
 
     def _ensure_node(self, xml, tag, attrs = dict()):
         for node in xml:
-            print(node)
             if node.tag == tag:
                 for k,v in attrs.items():
                     if node.attrib.get(k) is not v:

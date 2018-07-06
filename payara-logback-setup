@@ -29,9 +29,11 @@ class Levels(object):
             self._levels[key] = value
 
     def add_to_xml(self, xml):
-        log = os.environ.get("LOG")
-        if log is not None:
-            self._ensure_node(xml, 'root').set("level", log)
+        value = os.environ.get("LOG")
+        if value is not None:
+            if value[0] in self._LEVEL_MAP:
+                value = self._LEVEL_MAP[value[0]]
+            self._ensure_node(xml, 'root').set("level", value)
         for key, value in sorted(self._levels.items(), reverse=True):
             self._ensure_node(xml, 'logger', {'name': key}).set("level", value)
 

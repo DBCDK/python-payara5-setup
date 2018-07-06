@@ -78,7 +78,7 @@ Sets the `<property name="serverName" value="..."/>` in the `http` element
 "user:pass@host:port/database"
 non-transactional-connections = true
 ```
-Create `jdbc/my-ds` as a nontransactional postgresql datasource to the address given
+Create `jdbc/my-ds` as a nontransactional postgresql datasource to the address given address
 
 #### .jms
 
@@ -104,3 +104,12 @@ name = "jndi/my-worker-queue" ; required
 ; AddressList = "host:port,host:port,..."
 ```
 Create a queue for a mdb
+
+## Setup hint
+ * run `payara5/bin/asadmin --verbose`
+ * enter the page that allow the change wanted
+ * copy domain.xml
+ * execut change
+ * `diff -u -w -W280 <(xmllint -format domain.xml | xmllint --exc-c14n -) <(xmllint -format payara5/glassfish/domains/domain1/config/domain.xml | xmllint --exc-c14n -)`
+ * try to replicate by rmaking file(s) that modify `domain.xml`
+ 

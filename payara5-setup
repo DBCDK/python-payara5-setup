@@ -185,9 +185,19 @@ Handles  input gresourced and maps then into a 'config.xml' abstraction
             if tokenizer.tokens_are(T.NEWLINE):
                 pass
             elif tokenizer.tokens_are(T.SECTION, T.EOL, output=line):
-                if line[0].content() not in {"app", "common", "ext"}:
+                if line[0].content() not in {"app", "common", "ext", "osgi"}:
                     raise Exception("at %s unknown section. known are: app, common & ext" % line[0].at())
-                if line[0].content() == "app":
+                if line[0].content() == "osgi":
+                    while tokenizer.has_more():
+                        line = []
+                        if tokenizer.tokens_are(T.NEWLINE):
+                            pass
+                        elif tokenizer.tokens_are(T.TEXT, T.EOL, output=line):
+                            osgi_file = os.path.join(base, line[0].content())
+                            self._domain_xml.osgi(os.path.basename(osgi_file), osgi_file)
+                        else:
+                            break
+                elif line[0].content() == "app":
                     lib = os.path.join(self._instance_dir, 'lib', 'applibs')
                     os.makedirs(lib, exist_ok=True)
                 elif line[0].content() == "ext":
@@ -516,8 +526,9 @@ Handles  input gresourced and maps then into a 'config.xml' abstraction
     
     .lib
     (section|string)+
-      * section - (one of: applibs, common(default) or ext) where to place jars (see asadmin)
-        * string(s) - (absolute or relative to .lib file) path of war/ear
+      * section - (one of: osgi, app, common(default) or ext) where to place jars (see asadmin)
+        * string(s) - (absolute or relative to .lib file) path of jar
+        [osgi] is special adds as a osgi application
     
     .cres:
     (section text? key-value*)*

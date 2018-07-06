@@ -67,7 +67,7 @@ class DomainXml(object):
             .element("property", {"name": "cdiDevModeEnabled", "value": "false"}).done() \
             .element("property", {"name": "implicitCdiEnabled", "value": "true"}).done() \
             .element("property", {"name": "preserveAppScopedResources", "value": "false"}).done() \
-            .element("module", {"name": "mini"}) \
+            .element("module", {"name": name}) \
             .element("engine", {"sniffer": "cdi"}).done() \
             .element("engine", {"sniffer": "ejb"}).done() \
             .element("engine", {"sniffer": "security"}).done() \
@@ -75,6 +75,27 @@ class DomainXml(object):
             .done()
         self._ensure('servers/server[@name="server"]', "application-ref", {"ref": name, "virtual-servers": "server"})
         self._ensure('configs/config[@name="server-config"]', "cdi-service")
+
+    def osgi(self, name: str, path: str):
+        """
+        Setup an application under the name 'name' with a app file from 'path'
+        ensure cdi-service is enabled
+        :param name:
+        :param path:
+        :return: None
+        """
+        self._ensure(".", "applications")
+        self._ensure('applications', "application", {"name": name}) \
+            .clear() \
+            .attr("name", name) \
+            .attr("location", "file://" + path) \
+            .attr("object-type", "user") \
+            .element("property", {"name": "archiveType", "value": "osgi"}).done() \
+            .element("property", {"name": "isComposite", "value": "true"}).done() \
+            .element("module", {"name": name}) \
+            .element("engine", {"sniffer": "osgi"}).done() \
+            .done()
+        self._ensure('servers/server[@name="server"]', "application-ref", {"ref": name, "virtual-servers": "server"})
 
     def custom_resource_primitive(self, type: str, name: str, value: str) -> None:
         """

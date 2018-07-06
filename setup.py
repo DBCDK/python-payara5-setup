@@ -10,7 +10,7 @@ setup(
             'packages': find_packages(exclude=['tests', 'README.md'])
         }
     },
-    scripts=['payara5-setup', 'payara-log-setup', 'payara-admin-password'],
+    scripts=['payara5-setup', 'payara-log-setup', 'payara-logback-setup', 'payara-admin-password'],
     url='https://github.com/kosmisk-dk/payara5-setup',
     license='gpl3',
     author='kosmisk-dk',

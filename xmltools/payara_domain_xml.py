@@ -72,6 +72,8 @@ class DomainXml(object):
             .element("engine", {"sniffer": "ejb"}).done() \
             .element("engine", {"sniffer": "security"}).done() \
             .element("engine", {"sniffer": "web"}).done() \
+            .element("engine", {"sniffer": "webservice"}).done() \
+            .element("engine", {"sniffer": "weld"}).done() \
             .done()
         self._ensure('servers/server[@name="server"]', "application-ref", {"ref": name, "virtual-servers": "server"})
         self._ensure('configs/config[@name="server-config"]', "cdi-service")

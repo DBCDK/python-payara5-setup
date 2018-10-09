@@ -122,13 +122,16 @@ Set JVM options
 -Xmx*
 -Xms*
 [add]
--Xmx2G
--Xms2G
+"-Xmx${JAVA_OPT_MX|2G}"
+"-Xms${JAVA_OPT_MS|2G}"
 ```
 
-The above example removes any `-Xmx` or `-Xms` settings already in the options, and adds new.
+The above example removes any `-Xmx` or `-Xms` settings already in the options, and adds new options, 
+that are configurable from environment variables. Note the use of "" - these are only needed when expanding 
+environment variables and similar.
 
 A special section exists: `[clear]` that will remove all settings.
+
 
 ## Setup hint
  * run `payara5/bin/asadmin --verbose`

@@ -113,6 +113,23 @@ name = "jndi/my-worker-queue" ; required
 ```
 Create a queue for a mdb
 
+#### .jvm
+
+Set JVM options
+
+```
+[remove]
+-Xmx*
+-Xms*
+[add]
+-Xmx2G
+-Xms2G
+```
+
+The above example removes any `-Xmx` or `-Xms` settings already in the options, and adds new.
+
+A special section exists: `[clear]` that will remove all settings.
+
 ## Setup hint
  * run `payara5/bin/asadmin --verbose`
  * enter the page that allow the change wanted
